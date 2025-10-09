@@ -1,70 +1,140 @@
-#include <Wire.h>
-#include <LiquidCrystal_I2C.h>
+#include <WiFiS3.h>
 #include <DHT.h>
-#include <Adafruit_Sensor.h>
+#include <Wire.h>
 #include <Adafruit_BMP280.h>
+#include <ArduinoJson.h>
+#include <LiquidCrystal_I2C.h>
 
-// Definición de pines
-#define DHTPIN 2           // Pin donde está conectado el DHT22
-#define LDR_PIN A0         // Pin donde está conectado el LDR.
-#define LED_PIN 7          // Pin donde está conectado el LED.
-#define BUZZER_PIN 8       // Pin donde está conectado el buzzer.
+// ==== CONFIGURACIÓN DE SENSORES ====
+#define DHTPIN 2
+#define DHTTYPE DHT22
+#define SENSOR_LLUVIADIG 3
+#define SENSOR_SUELO A0
+#define SENSOR_GAS A1
+#define LED_PIN 7
+#define BUZZER_PIN 8
 
-// Inicialización de sensores
-DHT dht(DHTPIN, DHT22);         // Inicializa el DHT22
-Adafruit_BMP280 bmp;            // Inicializa el BMP280
-LiquidCrystal_I2C lcd(0x27, 16, 2); // Inicializa el LCD I2C
+DHT dht(DHTPIN, DHTTYPE);
+Adafruit_BMP280 bmp;
+LiquidCrystal_I2C lcd(0x27, 16, 2);
 
-int umbralLDR = 500;            // Umbral para detectar baja luz (ajustar según prueba)
+// ==== CONFIGURACIÓN DE RED ====
+char ssid[] = "ARRIS-0852";     
+char pass[] = "DCA633FC0852";
+WiFiClient client;
+char server[] = "192.168.0.5"; // IP de tu servidor Node.js
 
+// ==== SETUP ====
 void setup() {
-  Serial.begin(9600);           // Inicializa la comunicación serial
-  dht.begin();                  // Inicializa el DHT22
-  bmp.begin();                  // Inicializa el BMP280
-  lcd.begin(16, 2);             // Inicializa el LCD con 16 columnas y 2 filas
-  lcd.backlight();              // Enciende la luz de fondo del LCD
-  pinMode(LED_PIN, OUTPUT);     // Configura el pin del LED como salida
-  pinMode(BUZZER_PIN, OUTPUT);  // Configura el pin del buzzer como salida
-}
+  Serial.begin(9600);
+  dht.begin();
+  bmp.begin(0x76);
+  lcd.begin(16, 2);
+  lcd.backlight();
 
-void loop() {
-  // Lectura del DHT22
-  float h = dht.readHumidity(); // Lee la humedad
-  float t = dht.readTemperature(); // Lee la temperatura en Celsius
+  pinMode(SENSOR_LLUVIADIG, INPUT);
+  pinMode(SENSOR_SUELO, INPUT);
+  pinMode(SENSOR_GAS, INPUT);
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
 
-  // Lectura del BMP280
-  float p = bmp.readPressure() / 100.0F; // Lee la presión en hPa
-
-  // Lectura del LDR
-  int valorLDR = analogRead(LDR_PIN); // Lee el valor del LDR
-
-  // Mostrar datos en el LCD
   lcd.setCursor(0, 0);
-  lcd.print("Temp: ");
-  lcd.print(t);
-  lcd.print("C");
+  lcd.print("Conectando WiFi");
 
-  lcd.setCursor(0, 1);
-  lcd.print("Humed: ");
-  lcd.print(h);
-  lcd.print("%");
-
-  // Comprobar condiciones para LED y Buzzer
-  if (valorLDR < umbralLDR) { // Si el valor del LDR es menor que el umbral
-    digitalWrite(LED_PIN, HIGH); // Enciende el LED
-    digitalWrite(BUZZER_PIN, HIGH); // Activa el buzzer
-    Serial.println("LLUVIA DETECTADA");
-  } else {
-    digitalWrite(LED_PIN, LOW); // Apaga el LED
-    digitalWrite(BUZZER_PIN, LOW); // Desactiva el buzzer
-    Serial.println("SIN LLUVIA");
+  // Conexión WiFi
+  while (WiFi.begin(ssid, pass) != WL_CONNECTED) {
+    delay(1000);
+    Serial.print(".");
+    digitalWrite(LED_PIN, millis() % 1000 < 500 ? HIGH : LOW); // parpadeo mientras conecta
   }
 
-  // Imprimir datos en el monitor serial
-  Serial.print("Humedad: "); Serial.print(h);
-  Serial.print("%, Temperatura: "); Serial.print(t);
-  Serial.print("C, Presión: "); Serial.print(p);
-  Serial.print(" hPa, LDR Value: "); Serial.println(valorLDR);
+  lcd.clear();
+  lcd.print("WiFi conectado");
+  Serial.println("\nWiFi conectado.");
+  digitalWrite(LED_PIN, HIGH); // LED fijo cuando WiFi OK
+  delay(2000);
+}
 
-  delay(2000); // Espera 2 segundos antes de la siguiente lectura
+// ==== LOOP PRINCIPAL ====
+void loop() {
+  float temp = dht.readTemperature();
+  float hum = dht.readHumidity();
+  float pres = bmp.readPressure() / 100.0;
+  int lluvia = digitalRead(SENSOR_LLUVIADIG);
+  int humedadSuelo = analogRead(SENSOR_SUELO);
+  int gas = analogRead(SENSOR_GAS);
+
+  String lluviaTxt = lluvia == 0 ? "SI" : "NO";
+
+  // Mostrar datos en LCD
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("T:");
+  lcd.print(temp, 1);
+  lcd.print("C H:");
+  lcd.print(hum, 1);
+  lcd.print("%");
+
+  lcd.setCursor(0, 1);
+  lcd.print("Pres:");
+  lcd.print(pres, 1);
+  lcd.print("hPa");
+
+  // Alertas LED y Buzzer
+  bool alerta = false;
+
+  if (temp > 35) {
+    tone(BUZZER_PIN, 1000, 500); // beep medio segundo
+    lcd.setCursor(0, 1);
+    lcd.print("ALERTA: TEMP!");
+    alerta = true;
+  } 
+  if (gas > 600) {
+    tone(BUZZER_PIN, 1500, 1000); // beep largo
+    lcd.setCursor(0, 1);
+    lcd.print("ALERTA: GAS!");
+    alerta = true;
+  }
+  if (lluviaTxt == "SI") {
+    tone(BUZZER_PIN, 800, 300); // beep corto
+    lcd.setCursor(0, 1);
+    lcd.print("ALERTA: LLUVIA!");
+    alerta = true;
+  }
+
+  if (!alerta) {
+    noTone(BUZZER_PIN); // apagar buzzer
+    digitalWrite(LED_PIN, HIGH); // LED WiFi OK
+  } else {
+    digitalWrite(LED_PIN, millis() % 500 < 250 ? HIGH : LOW); // parpadeo LED alerta
+  }
+
+  // Envío de datos JSON
+  StaticJsonDocument<256> json;
+  json["temperatura"] = temp;
+  json["humedad"] = hum;
+  json["presion"] = pres;
+  json["lluvia"] = lluviaTxt;
+  json["humedadSuelo"] = humedadSuelo;
+  json["gas"] = gas;
+
+  String payload;
+  serializeJson(json, payload);
+
+  if (client.connect(server, 3000)) {
+    client.println("POST /api/lecturas HTTP/1.1");
+    client.println("Host: servidor");
+    client.println("Content-Type: application/json");
+    client.print("Content-Length: ");
+    client.println(payload.length());
+    client.println();
+    client.print(payload);
+    client.stop();
+    Serial.println("Datos enviados:");
+    Serial.println(payload);
+  } else {
+    Serial.println("Error al conectar al servidor");
+  }
+
+  delay(10000); // cada 10 segundos
 }
